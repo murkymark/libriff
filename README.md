@@ -8,4 +8,7 @@ A C (C99) library for parsing RIFF (Resource Interchange File Format) files.
 - Can be seen as simple example for a file format library supporting user defined input wrappers
 
 See "riff.h" for further info.
+
+TODO:
+Make inline documentation Doxygen compatible
 </pre>

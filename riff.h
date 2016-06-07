@@ -1,7 +1,8 @@
 /*
 libriff
 
-Author: Markus Wolf
+Author/copyright: Markus Wolf
+License: zlib (https://opensource.org/licenses/Zlib)
 
 
 To read any RIFF files.
@@ -45,13 +46,15 @@ Read members of the riff_handle to get
 
 
 //Error codes (pass to riff_errorToString()), value mapping may change in the future
-//not critical
+//non critical
 #define RIFF_ERROR_NONE   0  //no error
 #define RIFF_ERROR_EOC    1  //end of current chunk, when trying to read/seek beyond end of current chunk data
 #define RIFF_ERROR_EOCL   2  //end of chunk list, if you are already at the last chunk in the current list level, occures when trying to seek the next chunk
-#define RIFF_ERROR_EXDAT  3  //excess data at end of file beyond level 0 chunk list, not critical, the rest is ignored
+#define RIFF_ERROR_EXDAT  3  //excess data at end of file beyond level 0 chunk list, not critical, the rest is simply ignored
+
 //critical errors
 #define RIFF_ERROR_CRITICAL  4  //first critical error code (to be used for <,> condition)
+
 #define RIFF_ERROR_ILLID     4  //illegal ID, ID (type) contains not printable or non ASCII characters
 #define RIFF_ERROR_ICSIZE    5  //invalid chunk size value in chunk header, value exceeds list level or file - indicates corruption or cut off file 
 #define RIFF_ERROR_EOF       6  //unexpected end of RIFF file, indicates corruption (wrong chunk size field) or a cut off file or the passed size parameter was wrong (too small) upon opening
@@ -83,7 +86,8 @@ struct riff_levelStackE {
 
 
 //RIFF handle structure
-//members are public
+//- Members are public and intended for read access (to avoid a plethora of get-functions)
+//  Be careful with the stack, check "ls_size" first
 typedef struct riff_handle {
 	//RIFF file header info, available once the file is opened (could have been put)
 	char h_id[5];      //"RIFF" + terminator

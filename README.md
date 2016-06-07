@@ -1,5 +1,5 @@
 # libriff
-A library for parsing RIFF (Resource Interchange File Format) files.  
+A C (C99) library for parsing RIFF (Resource Interchange File Format) files.  
 
 <pre>
 - Helps to stroll around in the chunk tree structure

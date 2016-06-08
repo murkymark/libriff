@@ -108,6 +108,41 @@ void test(FILE *f){
 	test_traverse_rec(rh);
 	printf("\nlist chunks: %d\nchunks: %d\n", nlist, nchunk);
 	
+	int r;
+	
+	
+	//current list level
+	printf("\n");
+	printf("Current pos: %d\n", rh->pos);
+	printf("Current list level: %d\n", rh->ls_level);
+	
+	
+	//read a byte
+	printf("Reading a byte of chunk data ...\n");
+	char buf[1];
+	r = riff_readInChunk(rh, buf, 1);
+	printf("Bytes read: %d of %d\n", r, 1);
+	printf("Current pos: %d\n", rh->pos);
+	printf("Current list level: %d\n", rh->ls_level);
+	
+	
+	printf("seeking a byte forward in chunk data ...\n");
+	r = riff_seekInChunk(rh, rh->c_pos + 1);
+	if(r != RIFF_ERROR_NONE)
+		printf("Seek failed!\n");
+	printf("Current pos: %d\n", rh->pos);
+	printf("Current list level: %d\n", rh->ls_level);
+	
+	
+	//rewind to first chunk's data pos 0
+	printf("Rewind to first chunk in file ...\n");
+		r = riff_rewind(rh);
+	if(r != RIFF_ERROR_NONE)
+		printf("Error: %s\n", riff_errorToString(r));
+	printf("Current pos: %d (expected: %d)\n", rh->pos, rh->pos_start + RIFF_HEADER_SIZE + RIFF_CHUNK_DATA_OFFSET);
+	printf("Current list level: %d\n", rh->ls_level);
+	
+	
 	riff_handleFree(rh);
 	
 	//find and visit all LIST chunks

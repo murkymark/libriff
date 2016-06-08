@@ -12,9 +12,9 @@ Special chunks (e.g. "LIST") can contain a nested sub list of chunks
 
 Example structure of RIFF file:
 
-chunk level start ("RIFF") - ID,size,type
+chunk list start ("RIFF") - ID,size,type
   type (of parent chunk header)
-  chunk block - level 0
+  chunk block - list level 0
   chunk block ("LIST") - level 0 - ID,size,type
     type (of parent chunk header)
     chunk block - level 1
@@ -23,16 +23,18 @@ chunk level start ("RIFF") - ID,size,type
 
 
 Usage:
-Use a default allocator function (file, mem) or create your own
- The required function pointers must be set for reading and seeking
- When creating your own, have a look at the default function code as template
-After the file is opened we are in the first chunk at level 0
+Use a default open-function (file, mem) or create your own
+  The required function pointers for reading and seeking are set here
+  When creating your own open-function, take a look at the default function code as template
+After the file is opened we are in the first chunk at list level 0
  You can freely read and seek within the data of the current junk
  Use riff_nextChunk() to go to the first data byte of the next junk (chunk header is read already then)
-If the current junk contains a list of sub level chunks, call riff_subInto() to be positioned at the first data byte of the first sub level chunk
- Call riff_subBackNext() to go to the next chunk in the parent level (seek forward, not backward)
- Call riff_subBack() to go to the data start of the parent level chunk (seek backward, not forward)
-Read members of the riff_handle to get 
+If the current junk contains a list of sub level chunks:
+ Call riff_seekLevelSub() to be positioned at the first data byte of the first chunk in the sub list level
+ Call riff_levelParent() to leave the sub list without changing the file position
+Read members of the riff_handle to get all info about current file position, current chunk, etc.
+
+May not work for RIFF files larger than 2GB.
 */
 
 
@@ -52,17 +54,17 @@ Read members of the riff_handle to get
 #define RIFF_ERROR_NONE   0  //no error
 #define RIFF_ERROR_EOC    1  //end of current chunk, when trying to read/seek beyond end of current chunk data
 #define RIFF_ERROR_EOCL   2  //end of chunk list, if you are already at the last chunk in the current list level, occures when trying to seek the next chunk
-#define RIFF_ERROR_EXDAT  3  //excess data at end of file beyond level 0 chunk list, not critical, the rest is simply ignored
+#define RIFF_ERROR_EXDAT  3  //excess bytes at end of chunk list level, not critical, the rest is simply ignored (1-7 bytes inside list, otherwise a following chunk is expected - more at file level possible), should never occur
 
 //critical errors
-#define RIFF_ERROR_CRITICAL  4  //first critical error code (to be used for <,> condition)
+#define RIFF_ERROR_CRITICAL  4  //first critical error code ( >= RIFF_ERROR_CRITICAL is always critical error)
 
-#define RIFF_ERROR_ILLID     4  //illegal ID, ID (type) contains not printable or non ASCII characters
-#define RIFF_ERROR_ICSIZE    5  //invalid chunk size value in chunk header, value exceeds list level or file - indicates corruption or cut off file 
+#define RIFF_ERROR_ILLID     4  //illegal ID, ID (or type) contains not printable or non ASCII characters or is wrong
+#define RIFF_ERROR_ICSIZE    5  //invalid chunk size value in chunk header, too small or value exceeds list level or file - indicates corruption or cut off file 
 #define RIFF_ERROR_EOF       6  //unexpected end of RIFF file, indicates corruption (wrong chunk size field) or a cut off file or the passed size parameter was wrong (too small) upon opening
 #define RIFF_ERROR_ACCESS    7  //access error, indicating that the file is not accessible (permissions, invalid file handle, etc.)
 
-#define RIFF_ERROR_INVALID_HANDLE 8
+#define RIFF_ERROR_INVALID_HANDLE 8  //riff_handle is not set up or is NULL
 
 
 /*
@@ -100,7 +102,7 @@ typedef struct riff_handle {
 	char h_type[5];    //type of file FOURCC + terminator
 	size_t pos_start;  //start pos of RIFF file
 
-	size_t size;      //total size of RIFF file
+	size_t size;      //total size of RIFF file, 0 means unspecified
 	size_t pos;       //current position in stream
 	
 	size_t c_pos_start; //start pos of current chunk (absolute pos)
@@ -151,19 +153,22 @@ int riff_seekInChunk(riff_handle *rh, size_t c_pos);      //seek in current chun
 
 int riff_seekNextChunk(struct riff_handle *rh);       //seek to start of next chunk within current level, ID and size is read automatically, return
 //int riff_seekNextChunkID(struct riff_handle *rh, char *id);  //find and go to next chunk with id (4 byte) in current level, fails if not found - position is invalid then -> maybe not needed, the user can do it via simple loop
-int riff_seekChunkStart(struct riff_handle *rh);      //seek back to start of curren chunk
+int riff_seekChunkStart(struct riff_handle *rh);      //seek back to data start of current chunk
 int riff_rewind(struct riff_handle *rh);              //seek back to very first chunk of file at level 0, the position just after opening via riff_open_...()
 int riff_seekLevelStart(struct riff_handle *rh);      //goto start of first data byte of first chunk in current level (seek backward)
 
 int riff_seekLevelSub(struct riff_handle *rh);        //goto sub level chunk (auto seek to start of parent chunk if not already there); "LIST" chunk typically contains a list of sub chunks
-int riff_levelParent(struct riff_handle *rh);         //step back from sub level; position doesn't change and you are inside the data section of the parent level (not at the beginning of it!)
+
+//step back from sub list level; position doesn't change and you are still inside the data section of the parent list chunk (not at the beginning of it!)
+//returns != RIFF_ERROR_NONE, if we are at level 0 already and can't go back any further
+int riff_levelParent(struct riff_handle *rh);
 
 //int riff_seekLevelParent(struct riff_handle *rh);     //go back from sub level to the start of parent chunk (seek backward)
 //int riff_seekLevelParentNext(struct riff_handle *rh); //go back from sub level to the start of the chunk following the parent chunk (seek forward)
 
 //validate chunk level structure, seeks to the first byte of the current level, seeks from chunk header to chunk header
-//to check all sub levels you need to define a recursive function; by comparing a chunk ID you have to decide if it contains a sub level chunk list to visit according to the RIFF type
-//file position is at end of file after calling
+//to check all sub lists you need to define a recursive function
+//file position is changed by function
 int riff_levelValidate(struct riff_handle *rh);
 
 //return string to error code
@@ -206,12 +211,13 @@ int riff_readHeader(riff_handle *rh);
 
 //create and return initialized RIFF handle, FPs are set up for file access
 //file position must be at the start of RIFF file, which can be nested in another file (file pos > 0)
-//pass size as 0 for unknown size, giving the correct size helps to identify file corruption
 //Since the file was opened by the user, it must be closed by the user.
+//size: must be exact if > 0, pass 0 for unknown size (the correct size helps to identify file corruption)
 int riff_open_file(riff_handle *h, FILE *f, size_t size);
 
 //create and return initialized RIFF handle, FPs are set up to default for memory access
 //If memory was allocated by the user, it must be deallocated by the user after use.
+//size: must be > 0
 int riff_open_mem(riff_handle *h, void *memptr, size_t size);
 
 

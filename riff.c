@@ -1,8 +1,13 @@
+// take care: whenever we call rh->fp_read() or rh->fp_seek()
+//   we must adjust rh->c_pos and rh->pos
+//   => to simplify user wrappers we update the positions outside
+
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
-#include <stdarg.h> //for function with variable number of arguments
+#include <stdarg.h> //function with variable number of arguments
 
 #include "riff.h"
 
@@ -36,7 +41,7 @@ static const char *riff_es[] = {
 	
 	//9
 	//all other
-	"Unknown RIFF ERROR"  
+	"Unknown RIFF error"  
 };
 
 
@@ -77,7 +82,7 @@ int riff_open_file(riff_handle *rh, FILE *f, size_t size){
 	if(rh != NULL){
 		rh->fh = f;
 		rh->size = size;
-		rh->pos_start = ftell(f); //file offset of start of RIFF stream
+		rh->pos_start = ftell(f); //current file offset of stream considered as start of RIFF file
 		
 		rh->fp_read = &read_file;
 		rh->fp_seek = &seek_file;
@@ -103,6 +108,7 @@ size_t seek_mem(void *fh, size_t pos){
 	return pos; //instant in memory
 }
 
+/*****************************************************************************/
 //description: see header file
 int riff_open_mem(riff_handle *rh, void *ptr, size_t size){
 	if(rh == NULL)
@@ -110,7 +116,7 @@ int riff_open_mem(riff_handle *rh, void *ptr, size_t size){
 	
 	rh->fh = ptr;
 	rh->size = size;
-	//rh->pos_start = 0 //redundant
+	//rh->pos_start = 0 //redundant -> passed memory pointer is always expected to point to start of riff file
 	
 	rh->fp_read = &read_mem;
 	rh->fp_seek = &seek_mem;
@@ -147,14 +153,16 @@ unsigned int readUInt32LE(riff_handle *rh){
 
 /*****************************************************************************/
 //read chunk header
+//return error code
 int riff_readChunkHeader(riff_handle *rh){
 	char buf[8];
 	
 	int n = rh->fp_read(rh->fh, buf, 8);
 	
 	if(n != 8){
-		//printf("failed to read header, %d of %d bytes read\n", n, 8);
-		return -1; //return error code
+		if(rh->fp_printf)
+			rh->fp_printf("Failed to read header, %d of %d bytes read!\n", n, 8);
+		return RIFF_ERROR_EOF; //return error code
 	}
 	
 	rh->c_pos_start = rh->pos;
@@ -162,8 +170,9 @@ int riff_readChunkHeader(riff_handle *rh){
 	
 	memcpy(rh->c_id, buf, 4);
 	rh->c_size = convUInt32LE(buf + 4);
-	rh->pad = rh->c_size & 0x1;
+	rh->pad = rh->c_size & 0x1; //pad byte present if size is odd
 	rh->c_pos = 0;
+	
 	
 	//verify valid chunk ID, must contain only printable ASCII chars
 	int i;
@@ -171,11 +180,37 @@ int riff_readChunkHeader(riff_handle *rh){
 		if(rh->c_id[i] < 0x20  ||  rh->c_id[i] > 0x7e) {
 			if(rh->fp_printf)
 				rh->fp_printf("Invalid chunk ID (FOURCC) of chunk at file pos %d: 0x%02x,0x%02x,0x%02x,0x%02x\n", rh->c_pos_start, rh->c_id[0], rh->c_id[1], rh->c_id[2], rh->c_id[3]);
-			return -1;
+			return RIFF_ERROR_ILLID;
 		}
 	}
 	
-	return 0;
+	
+	//check if chunk fits into current list level and file, value could be corrupt
+	size_t cposend = rh->c_pos_start + RIFF_CHUNK_DATA_OFFSET + rh->c_size + rh->pad;
+	
+	size_t listend;
+	if(rh->ls_level > 0){
+		struct riff_levelStackE *ls = rh->ls + (rh->ls_level - 1);
+		listend = ls->c_pos_start + RIFF_CHUNK_DATA_OFFSET + ls->c_size; //end of current list level without pad byte
+	}
+	else
+		listend = rh->pos_start + RIFF_CHUNK_DATA_OFFSET + rh->h_size;
+	
+	if(cposend > listend){
+		if(rh->fp_printf)
+			rh->fp_printf("Chunk size exceeds list size! At least one size value must be corrupt!");
+		//chunk data must be considered as cut off, better skip this chunk
+		return RIFF_ERROR_ICSIZE;
+	}
+	
+	//check chunk size against file size
+	if((rh->size > 0)  &&  (cposend > rh->size)){
+		if(rh->fp_printf)
+			rh->fp_printf("Chunk size exceeds file size! At least one size value must be corrupt!");
+		return RIFF_ERROR_EOF; //Or better RIFF_ERROR_ICSIZE?
+	}
+	
+	return RIFF_ERROR_NONE;
 }
 
 
@@ -259,13 +294,14 @@ void riff_handleFree(riff_handle *rh){
 
 /*****************************************************************************/
 //description: see header file
+//shall be called only once by the open-function
 int riff_readHeader(riff_handle *rh){
 	char buf[RIFF_HEADER_SIZE];
 	
 	if(rh->fp_read == NULL) {
 		if(rh->fp_printf)
-			rh->fp_printf("IO function pointer not set\n"); //fatal user error
-		return -1;
+			rh->fp_printf("I/O function pointer not set\n"); //fatal user error
+		return RIFF_ERROR_INVALID_HANDLE;
 	}
 	
 	int n = rh->fp_read(rh->fh, buf, RIFF_HEADER_SIZE);
@@ -273,9 +309,9 @@ int riff_readHeader(riff_handle *rh){
 	
 	if(n != RIFF_HEADER_SIZE){
 		if(rh->fp_printf)
-			rh->fp_printf("read error, failed to read header\n");
+			rh->fp_printf("Read error, failed to read RIFF header\n");
 		//printf("%d", n);
-		return -1; //return error code
+		return RIFF_ERROR_EOF; //return error code
 	}
 	memcpy(rh->h_id, buf, 4);
 	rh->h_size = convUInt32LE(buf + 4);
@@ -285,26 +321,34 @@ int riff_readHeader(riff_handle *rh){
 	if(strcmp(rh->h_id, "RIFF") != 0) {
 		if(rh->fp_printf)
 			rh->fp_printf("Invalid RIFF header\n");
-		return -1;
+		return RIFF_ERROR_ILLID;
 	}
 	
-	riff_readChunkHeader(rh);
+	int r = riff_readChunkHeader(rh);
+	if(r != RIFF_ERROR_NONE)
+		return r;
 	
 	//compare with given file size
 	if(rh->size != 0){
 		if(rh->size != rh->h_size + RIFF_CHUNK_DATA_OFFSET){
 			if(rh->fp_printf)
-				rh->fp_printf("Chunk size mismatch");
-			return -1; //just a warning, file can still be used
+				rh->fp_printf("RIFF header chunk size %d doesn't match file size %d!\n", rh->h_size + RIFF_CHUNK_DATA_OFFSET, rh->size);
+			if(rh->size >= rh->h_size + RIFF_CHUNK_DATA_OFFSET)
+				return RIFF_ERROR_EXDAT;
+			else
+				//end isn't reached yet and you can parse further
+				//but file seems to be cut off or given file size (via open-function) was too small -> we are not allowed to read beyond
+				return RIFF_ERROR_EOF;
 		}
 	}
 
-	return 0;
+	return RIFF_ERROR_NONE;
 }
 
 
 
 // **** external ****
+
 
 
 //make use of user defined functions via FPs
@@ -325,41 +369,90 @@ size_t riff_readInChunk(riff_handle *rh, void *to, size_t size){
 /*****************************************************************************/
 //seek byte position in current chunk data from start of chunk data, return error on failure
 //keep track of position
+//c_pos: relative offset from chunk data start
 int riff_seekInChunk(riff_handle *rh, size_t c_pos){
+	//seeking behind last byte is valid, next read at that pos will fail
 	if(c_pos < 0  ||  c_pos > rh->c_size){
-		return -1;
+		return RIFF_ERROR_EOC;
 	}
 	rh->pos = rh->c_pos_start + RIFF_CHUNK_DATA_OFFSET + c_pos;
-	int ret = rh->fp_seek(rh->fh, rh->pos);
 	rh->c_pos = c_pos;
-	return ret;
+	size_t r = rh->fp_seek(rh->fh, rh->pos); //seek never fails, but pos might be invalid to read from
+	return RIFF_ERROR_NONE;
 }
 
 
 /*****************************************************************************/
 //description: see header file
 int riff_seekNextChunk(riff_handle *rh){
-	size_t posnew = rh->c_pos_start + RIFF_CHUNK_DATA_OFFSET + rh->c_size + rh->pad;
+	size_t posnew = rh->c_pos_start + RIFF_CHUNK_DATA_OFFSET + rh->c_size + rh->pad; //expected pos of following chunk
 	
-	size_t posmax;
+	size_t listend;
 	if(rh->ls_level > 0){
-		struct riff_levelStackE *ls = rh->ls + rh->ls_level - 1;
-		posmax = ls->c_pos_start + RIFF_CHUNK_DATA_OFFSET + ls->c_size; //max pos without possible pad byte
+		struct riff_levelStackE *ls = rh->ls + (rh->ls_level - 1);
+		listend = ls->c_pos_start + RIFF_CHUNK_DATA_OFFSET + ls->c_size; //end of current list level without pad byte
 	}
 	else
-		posmax = rh->pos_start + RIFF_CHUNK_DATA_OFFSET + rh->h_size; //at level 0
+		listend = rh->pos_start + RIFF_CHUNK_DATA_OFFSET + rh->h_size; //at level 0
 	
-	//printf("maxpos %d  posnew %d\n", posmax, posnew);
+	//printf("listend %d  posnew %d\n", listend, posnew);  //debug
 	
-	//if no more chunks in the current sub level
-	if(posmax < posnew + RIFF_CHUNK_DATA_OFFSET){
-		return -1;
+	//if no more chunks in the current sub list level
+	if(listend < posnew + RIFF_CHUNK_DATA_OFFSET){
+		//there shouldn't be any pad bytes at the list end, since the containing chunks should be padded to even number of bytes already
+		//we consider excess bytes as non critical file structure error
+		if(listend > posnew){
+			if(rh->fp_printf)
+				rh->fp_printf("%d excess bytes at pos %d at end of chunk list!\n", listend - posnew, posnew);
+			return RIFF_ERROR_EXDAT;
+		}
+		return RIFF_ERROR_EOCL;
 	}
 	
-	rh->fp_seek(rh->fh, posnew);
 	rh->pos = posnew;
+	rh->c_pos = 0; 
+	rh->fp_seek(rh->fh, posnew);
 	
 	return riff_readChunkHeader(rh);
+}
+
+
+/*****************************************************************************/
+int riff_seekChunkStart(struct riff_handle *rh){
+	//seek data offset 0 in current chunk
+	rh->pos = rh->c_pos_start + RIFF_CHUNK_DATA_OFFSET;
+	rh->c_pos = 0;
+	rh->fp_seek(rh->fh, rh->pos);
+	return RIFF_ERROR_NONE;
+}
+
+
+/*****************************************************************************/
+int riff_rewind(struct riff_handle *rh){
+	//pop stack as much as possible
+	while(rh->ls_level > 0) {
+		stack_pop(rh);
+	}
+	return riff_seekLevelStart(rh);
+}
+
+/*****************************************************************************/
+int riff_seekLevelStart(struct riff_handle *rh){
+	//if in sub list level
+	if(rh->ls_level > 0)
+		rh->pos = rh->ls[rh->ls_level - 1].c_pos_start;
+	else
+		rh->pos = rh->pos_start;
+		
+	rh->pos += RIFF_CHUNK_DATA_OFFSET + 4; //pos after type ID of chunk list
+	rh->c_pos = 0;
+	rh->fp_seek(rh->fh, rh->pos);
+
+	//read first chunk header, so we have the right values
+	int r = riff_readChunkHeader(rh);
+	
+	//check possible?
+	return r;
 }
 
 
@@ -370,17 +463,17 @@ int riff_seekLevelSub(riff_handle *rh){
 	if(strcmp(rh->c_id, "LIST") != 0  &&  strcmp(rh->c_id, "RIFF") != 0){
 		if(rh->fp_printf)
 			rh->fp_printf("%s() failed for chunk ID \"%s\", only RIFF or LIST chunk can contain subchunks", __func__, rh->c_id);
-		return -1;
+		return RIFF_ERROR_ILLID;
 	}
 	
 	//check size of parent chunk data, must be at least 4 for type ID (is empty list allowed?)
 	if(rh->c_size < 4){
 		if(rh->fp_printf)
 			rh->fp_printf("Chunk too small to contain sub level chunks\n");
-		return -1;
+		return RIFF_ERROR_ICSIZE;
 	}
 	
-	//seek to chunk start if needed
+	//seek to chunk start if not there, required to read type ID
 	if(rh->c_pos > 0) {
 		rh->fp_seek(rh->fh, rh->c_pos_start + RIFF_CHUNK_DATA_OFFSET);
 		rh->pos = rh->c_pos_start + RIFF_CHUNK_DATA_OFFSET;
@@ -396,7 +489,7 @@ int riff_seekLevelSub(riff_handle *rh){
 		if(type[i] < 0x20  ||  type[i] > 0x7e) {
 			if(rh->fp_printf)
 				rh->fp_printf("Invalid chunk type ID (FOURCC) of chunk at file pos %d: 0x%02x,0x%02x,0x%02x,0x%02x\n", rh->c_pos_start, type[0], type[1], type[2], type[3]);
-			return -1;
+			return RIFF_ERROR_ILLID;
 		}
 	}
 	
@@ -412,9 +505,30 @@ int riff_seekLevelSub(riff_handle *rh){
 //description: see header file
 int riff_levelParent(struct riff_handle *rh){
 	if(rh->ls_level <= 0)
-		return -1;
+		return -1;  //not critical error, we don't have or need a macro for that
 	stack_pop(rh);
-	return 0;
+	return RIFF_ERROR_NONE;
+}
+
+
+/*****************************************************************************/
+int riff_levelValidate(struct riff_handle *rh){
+	int r;
+	//seek to start of current list
+	if((r = riff_seekLevelStart(rh))  !=  RIFF_ERROR_NONE)
+		return r;
+	
+	//seek all chunks of current list level
+	while(1){
+		r = riff_seekNextChunk(rh);
+		if(r != RIFF_ERROR_NONE){
+			if(r == RIFF_ERROR_EOCL) //just end of list
+				break;
+			//error occured, was probably printed already
+			return r;
+		}
+	}
+	return RIFF_ERROR_NONE;
 }
 
 
@@ -425,32 +539,32 @@ const char *riff_errorToString(int e){
 	//Make sure mapping is correct!
 	switch (e){
 		case RIFF_ERROR_NONE:
-			return riff_es[0];
+			return riff_es[RIFF_ERROR_NONE];
 			break;
 		case RIFF_ERROR_EOC:
-			return riff_es[1];
+			return riff_es[RIFF_ERROR_EOC];
 			break;
 		case RIFF_ERROR_EOCL:
-			return riff_es[2];
+			return riff_es[RIFF_ERROR_EOCL];
 			break;
 		case RIFF_ERROR_EXDAT:
-			return riff_es[3];
+			return riff_es[RIFF_ERROR_EXDAT];
 			break;
 		
 		case RIFF_ERROR_ILLID:
-			return riff_es[4];
+			return riff_es[RIFF_ERROR_ILLID];
 			break;
 		case RIFF_ERROR_ICSIZE:
-			return riff_es[5];
+			return riff_es[RIFF_ERROR_ICSIZE];
 			break;
 		case RIFF_ERROR_EOF:
-			return riff_es[6];
+			return riff_es[RIFF_ERROR_EOF];
 			break;
 		case RIFF_ERROR_ACCESS:
-			return riff_es[7];
+			return riff_es[RIFF_ERROR_ACCESS];
 			break;
 		case RIFF_ERROR_INVALID_HANDLE:
-			return riff_es[8];
+			return riff_es[RIFF_ERROR_INVALID_HANDLE];
 			break;
 		
 		

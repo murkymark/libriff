@@ -31,8 +31,9 @@
 *.user
 
 
-example.exe
+sample_src
+*.exe
 libriff.a
-test.bat
+test*.bat
 
 

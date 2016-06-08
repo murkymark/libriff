@@ -36,6 +36,8 @@ Read members of the riff_handle to get
 */
 
 
+
+
 #ifndef _RIFF_H_
 #define _RIFF_H_
 
@@ -60,23 +62,26 @@ Read members of the riff_handle to get
 #define RIFF_ERROR_EOF       6  //unexpected end of RIFF file, indicates corruption (wrong chunk size field) or a cut off file or the passed size parameter was wrong (too small) upon opening
 #define RIFF_ERROR_ACCESS    7  //access error, indicating that the file is not accessible (permissions, invalid file handle, etc.)
 
+#define RIFF_ERROR_INVALID_HANDLE 8
 
 
 /*
-//riff header, also used for sub levels
+//riff header
 //unpacked -> do not read directly to it from file
 typedef struct riff_header
 {
 	unsigned char chunkID[5];    //offs 0x00 (with terminator to be printable)
-	int chunkDataSize;            //offs 0x04
+	int chunkDataSize;           //offs 0x04
 	unsigned char riffType[5];   //offs 0x08 
 } riff_header;
 */
 
 
+
+
 //level stack entry
-//needed to retrace from sub level chunk
-//data of parent
+//needed to retrace from sub level (list) chunk
+//header info of parent
 struct riff_levelStackE {
 	size_t c_pos_start;        //absolute chunk position in file stream, start of chunk header
 	unsigned char c_id[5];    //ID of chunk
@@ -112,21 +117,31 @@ typedef struct riff_handle {
 	void *fh;  //file handle or memory address, only accessed by user FP functions
 	
 	
-	//For internal use, don't call directly:
 	
-	//void (*fp_init)()    //optional
-	//void (*fp_deinit)()  //optional (close file stream, etc.)
+	// ******** For internal use:
 	
-	size_t (*fp_read)(void *fh, void *ptr, size_t size);    //required
-	size_t (*fp_seek)(void *fh, size_t pos);    //required
 	
-	//fp_write()
+	//read bytes; required
+	size_t (*fp_read)(void *fh, void *ptr, size_t size);
+	
+	//seek position relative to start pos; required
+	size_t (*fp_seek)(void *fh, size_t pos);
+	
+	//print error; optional;
+	//allocate function maps it to vfprintf(stderr, ...) by default; set to NULL after allocation to disable any printing
+	//to be assigned before calling riff_open_...()
+	int (*fp_printf)(const char * format, ... );
 	
 } riff_handle;
 
 
 
-//*** external ***
+
+//Allocate, initialize and return handle;
+riff_handle *riff_handleAllocate();
+
+//Free allocated handle memory
+void riff_handleFree(riff_handle *rh);
 
 
 
@@ -155,41 +170,55 @@ int riff_levelValidate(struct riff_handle *rh);
 //the current position (h->pos) tells you where in the file the problem occured
 const char *riff_errorToString(int e);
 
-//deallocate riff_handle and contained stack, file source (memory) is not closed or freed
-void riff_free(riff_handle *rh);
 
 
 
-//*** user IO init ***
+//TODO:
+
+//validate all, follow LIST chunks
+//check for duplicate chunk id in one evel
+//...
+
+//validate current level
+//...
 
 
 
-//allocation base, allocate and return handle; to call from user IO open function
-riff_handle *riff_handleAllocate();
 
-//read RIFF file header, return error code; to call from user IO functions
+// **** User I/O init ****
+// Functions used by built in open-functions
+// (To be used in your user made open-function)
+
+
+
+
+
+//read RIFF file header, return error code;
+//to be called from user IO functions
 int riff_readHeader(riff_handle *rh);
 
 
 
 
-//** default FP setup **
-
-
+// **** User I/O setup ****
+// Use the following built in open-functions or make your own
+// Only pass a fresh allocated handle
 
 //create and return initialized RIFF handle, FPs are set up for file access
 //file position must be at the start of RIFF file, which can be nested in another file (file pos > 0)
 //pass size as 0 for unknown size, giving the correct size helps to identify file corruption
-riff_handle *riff_open_file(FILE *f, size_t size);
+//Since the file was opened by the user, it must be closed by the user.
+int riff_open_file(riff_handle *h, FILE *f, size_t size);
 
 //create and return initialized RIFF handle, FPs are set up to default for memory access
-riff_handle *riff_open_mem(void *ptr, size_t size);
+//If memory was allocated by the user, it must be deallocated by the user after use.
+int riff_open_mem(riff_handle *h, void *memptr, size_t size);
 
 
 //user open - must handle "riff_handle" allocation and setup
 // e.g. for file access via network socket
 // see and use "riff_open_file()" definition as template
-// "riff_handle open_user(FOO, size_t size)";
+// "int open_user(riff_handle *h, FOO, size_t size)";
 
 
 

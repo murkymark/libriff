@@ -2,14 +2,17 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <stdarg.h> //for function with variable number of arguments
+
 #include "riff.h"
 
 
-#define RIFF_LEVEL_ALLOC 16  //number of elements allocated more when needing to enlarge (step)
+#define RIFF_LEVEL_ALLOC 16  //number of stack elements allocated per step lock more when needing to enlarge (step)
 
 
 //table to translate Error code to string
-const char *riff_es[] = {
+//shall correspond to RIFF_ERROR_... macros
+static const char *riff_es[] = {
 	//0
 	"No error",
 	//1
@@ -26,31 +29,51 @@ const char *riff_es[] = {
 	//6
 	"End of RIFF file",
 	//7
-	"File access failed"
-	
+	"File access failed",
 	//8
-	"Unknown RIFF ERROR"  //all other
+	"Invalid riff_handle",
+	
+	
+	//9
+	//all other
+	"Unknown RIFF ERROR"  
 };
 
 
+
+
 //*** default access FP setup ***
+
+/*****************************************************************************/
+//default print function
+int riff_printf(const char *format, ... ){
+	va_list args;
+	va_start(args, format);
+	int r = vfprintf(stderr, format, args);
+	va_end (args);
+	return r;
+}
 
 
 //** FILE **
 
 
+/*****************************************************************************/
 size_t read_file(void *fh, void *ptr, size_t size){
 	return fread(ptr, 1, size, (FILE*)fh);
 }
 
+/*****************************************************************************/
 size_t seek_file(void *fh, size_t pos){
 	fseek((FILE*)fh, pos, SEEK_SET);
 	return pos;
 }
 
+/*****************************************************************************/
 //description: see header file
-riff_handle *riff_open_file(FILE *f, size_t size){
-	riff_handle *rh = riff_handleAllocate();
+int riff_open_file(riff_handle *rh, FILE *f, size_t size){
+	if(rh == NULL)
+		return RIFF_ERROR_INVALID_HANDLE;
 	if(rh != NULL){
 		rh->fh = f;
 		rh->size = size;
@@ -61,42 +84,49 @@ riff_handle *riff_open_file(FILE *f, size_t size){
 		
 		riff_readHeader(rh);
 	}
-	return rh;
+	return RIFF_ERROR_NONE;
 }
+
 
 
 //** memory **
 
 
+/*****************************************************************************/
 size_t read_mem(void *fh, void *ptr, size_t size){
 	memcpy(ptr, fh, size);
 	return size;
 }
 
+/*****************************************************************************/
 size_t seek_mem(void *fh, size_t pos){
 	return pos; //instant in memory
 }
 
 //description: see header file
-riff_handle *riff_open_mem(void *ptr, size_t size){
-	riff_handle *rh = riff_handleAllocate();
-	if(rh != NULL){
-		rh->fh = ptr;
-		rh->size = size;
-		//rh->pos_start = 0 //redundant
-		
-		rh->fp_read = &read_mem;
-		rh->fp_seek = &seek_mem;
-		
-		riff_readHeader(rh);
-	}
-	return rh;
+int riff_open_mem(riff_handle *rh, void *ptr, size_t size){
+	if(rh == NULL)
+		return RIFF_ERROR_INVALID_HANDLE;
+	
+	rh->fh = ptr;
+	rh->size = size;
+	//rh->pos_start = 0 //redundant
+	
+	rh->fp_read = &read_mem;
+	rh->fp_seek = &seek_mem;
+	
+	riff_readHeader(rh);
+	
+	return RIFF_ERROR_NONE;
 }
 
 
-//*** internal ***
+
+// **** internal ****
 
 
+
+/*****************************************************************************/
 //pass pointer to 32 bit LE value and convert, return in native byte order
 unsigned int convUInt32LE(void *p){
 	unsigned char *c = (unsigned char*)p;
@@ -104,6 +134,7 @@ unsigned int convUInt32LE(void *p){
 }
 
 
+/*****************************************************************************/
 //read 32 bit LE from file via FP and return as native
 unsigned int readUInt32LE(riff_handle *rh){
 	char buf[4] = {0};
@@ -114,6 +145,7 @@ unsigned int readUInt32LE(riff_handle *rh){
 }
 
 
+/*****************************************************************************/
 //read chunk header
 int riff_readChunkHeader(riff_handle *rh){
 	char buf[8];
@@ -132,12 +164,13 @@ int riff_readChunkHeader(riff_handle *rh){
 	rh->c_size = convUInt32LE(buf + 4);
 	rh->pad = rh->c_size & 0x1;
 	rh->c_pos = 0;
-
+	
 	//verify valid chunk ID, must contain only printable ASCII chars
 	int i;
 	for(i = 0; i < 4; i++) {
 		if(rh->c_id[i] < 0x20  ||  rh->c_id[i] > 0x7e) {
-			fprintf(stderr,"Invalid chunk ID (FOURCC) of chunk at file pos %d: 0x%02x,0x%02x,0x%02x,0x%02x\n", rh->c_pos_start, rh->c_id[0], rh->c_id[1], rh->c_id[2], rh->c_id[3]);
+			if(rh->fp_printf)
+				rh->fp_printf("Invalid chunk ID (FOURCC) of chunk at file pos %d: 0x%02x,0x%02x,0x%02x,0x%02x\n", rh->c_pos_start, rh->c_id[0], rh->c_id[1], rh->c_id[2], rh->c_id[3]);
 			return -1;
 		}
 	}
@@ -146,6 +179,7 @@ int riff_readChunkHeader(riff_handle *rh){
 }
 
 
+/*****************************************************************************/
 //pop from level stack
 //when returning we are positioned inside the parent chunk ()
 void stack_pop(riff_handle *rh){
@@ -164,6 +198,7 @@ void stack_pop(riff_handle *rh){
 }
 
 
+/*****************************************************************************/
 //push to level stack
 void stack_push(riff_handle *rh, char *type){
 	//need to enlarge stack?
@@ -196,24 +231,40 @@ void stack_push(riff_handle *rh, char *type){
 }
 
 
-//*** user access ***
+//**** user access ****
 
 
+/*****************************************************************************/
 //description: see header file
 riff_handle *riff_handleAllocate(){
 	riff_handle *rh = calloc(1, sizeof(riff_handle));
 	if(rh != NULL){
+		rh->fp_printf = riff_printf;
 	}
 	return rh;
 }
 
+/*****************************************************************************/
+//description: see header file
+//Deallocate riff_handle and contained stack, file source (memory) is not closed or freed
+void riff_handleFree(riff_handle *rh){
+	if(rh == NULL)
+		return;
+	//free stack
+	if(rh->ls != NULL)
+		free(rh->ls);
+	//free struct
+	free(rh);
+}
 
+/*****************************************************************************/
 //description: see header file
 int riff_readHeader(riff_handle *rh){
 	char buf[RIFF_HEADER_SIZE];
 	
 	if(rh->fp_read == NULL) {
-		fprintf(stderr, "IO function pointer not set\n"); //fatal user error
+		if(rh->fp_printf)
+			rh->fp_printf("IO function pointer not set\n"); //fatal user error
 		return -1;
 	}
 	
@@ -221,7 +272,8 @@ int riff_readHeader(riff_handle *rh){
 	rh->pos += n;
 	
 	if(n != RIFF_HEADER_SIZE){
-		printf("read error, failed to read header\n");
+		if(rh->fp_printf)
+			rh->fp_printf("read error, failed to read header\n");
 		//printf("%d", n);
 		return -1; //return error code
 	}
@@ -231,7 +283,8 @@ int riff_readHeader(riff_handle *rh){
 
 
 	if(strcmp(rh->h_id, "RIFF") != 0) {
-		printf("invalid RIFF header\n");
+		if(rh->fp_printf)
+			rh->fp_printf("Invalid RIFF header\n");
 		return -1;
 	}
 	
@@ -240,7 +293,8 @@ int riff_readHeader(riff_handle *rh){
 	//compare with given file size
 	if(rh->size != 0){
 		if(rh->size != rh->h_size + RIFF_CHUNK_DATA_OFFSET){
-			printf("size mismatch");
+			if(rh->fp_printf)
+				rh->fp_printf("Chunk size mismatch");
 			return -1; //just a warning, file can still be used
 		}
 	}
@@ -250,12 +304,12 @@ int riff_readHeader(riff_handle *rh){
 
 
 
-//*** external ***
+// **** external ****
 
 
 //make use of user defined functions via FPs
 
-
+/*****************************************************************************/
 //read to memory block, returns number of successfully read bytes
 //keep track of position, do not read beyond end of chunk, pad byte is not read
 size_t riff_readInChunk(riff_handle *rh, void *to, size_t size){
@@ -268,7 +322,7 @@ size_t riff_readInChunk(riff_handle *rh, void *to, size_t size){
 	return n;
 }
 
-
+/*****************************************************************************/
 //seek byte position in current chunk data from start of chunk data, return error on failure
 //keep track of position
 int riff_seekInChunk(riff_handle *rh, size_t c_pos){
@@ -282,17 +336,7 @@ int riff_seekInChunk(riff_handle *rh, size_t c_pos){
 }
 
 
-//description: see header file
-void riff_free(riff_handle *rh){
-	if(rh == NULL)
-		return;
-	//free stack
-	if(rh->ls != NULL)
-		free(rh->ls);
-	free(rh);
-}
-
-
+/*****************************************************************************/
 //description: see header file
 int riff_seekNextChunk(riff_handle *rh){
 	size_t posnew = rh->c_pos_start + RIFF_CHUNK_DATA_OFFSET + rh->c_size + rh->pad;
@@ -319,17 +363,20 @@ int riff_seekNextChunk(riff_handle *rh){
 }
 
 
+/*****************************************************************************/
 //description: see header file
 int riff_seekLevelSub(riff_handle *rh){
 	//according to "https://en.wikipedia.org/wiki/Resource_Interchange_File_Format" only RIFF and LIST chunk IDs can contain subchunks
 	if(strcmp(rh->c_id, "LIST") != 0  &&  strcmp(rh->c_id, "RIFF") != 0){
-		fprintf(stderr, "%s() failed for ID \"%s\", only RIFF or LIST chunk can contain subchunks", __func__, rh->c_id);
+		if(rh->fp_printf)
+			rh->fp_printf("%s() failed for chunk ID \"%s\", only RIFF or LIST chunk can contain subchunks", __func__, rh->c_id);
 		return -1;
 	}
 	
 	//check size of parent chunk data, must be at least 4 for type ID (is empty list allowed?)
 	if(rh->c_size < 4){
-		printf("chunk too small to contain sub level chunks\n");
+		if(rh->fp_printf)
+			rh->fp_printf("Chunk too small to contain sub level chunks\n");
 		return -1;
 	}
 	
@@ -347,7 +394,8 @@ int riff_seekLevelSub(riff_handle *rh){
 	int i;
 	for(i = 0; i < 4; i++) {
 		if(type[i] < 0x20  ||  type[i] > 0x7e) {
-			fprintf(stderr,"Invalid chunk type ID (FOURCC) of chunk at file pos %d: 0x%02x,0x%02x,0x%02x,0x%02x\n", rh->c_pos_start, type[0], type[1], type[2], type[3]);
+			if(rh->fp_printf)
+				rh->fp_printf("Invalid chunk type ID (FOURCC) of chunk at file pos %d: 0x%02x,0x%02x,0x%02x,0x%02x\n", rh->c_pos_start, type[0], type[1], type[2], type[3]);
 			return -1;
 		}
 	}
@@ -360,6 +408,7 @@ int riff_seekLevelSub(riff_handle *rh){
 }
 
 
+/*****************************************************************************/
 //description: see header file
 int riff_levelParent(struct riff_handle *rh){
 	if(rh->ls_level <= 0)
@@ -369,6 +418,7 @@ int riff_levelParent(struct riff_handle *rh){
 }
 
 
+/*****************************************************************************/
 //description: see header file
 const char *riff_errorToString(int e){
 	//map error to error string
@@ -399,15 +449,14 @@ const char *riff_errorToString(int e){
 		case RIFF_ERROR_ACCESS:
 			return riff_es[7];
 			break;
+		case RIFF_ERROR_INVALID_HANDLE:
+			return riff_es[8];
+			break;
+		
 		
 		default:
-			return  riff_es[8];
+			return  riff_es[9];
 			break;
 	}
 }
 
-//validate all, follow LIST chunks
-//check for duplicate chunk id in one evel
-
-
-//validate level

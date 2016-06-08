@@ -131,6 +131,7 @@ void test(FILE *f){
 	if(r != RIFF_ERROR_NONE)
 		printf("Seek failed!\n");
 	printf("Current pos: %d\n", rh->pos);
+	printf("Offset in current chunk data: %d\n", rh->c_pos);
 	printf("Current list level: %d\n", rh->ls_level);
 	
 	
